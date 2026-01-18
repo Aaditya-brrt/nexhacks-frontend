@@ -9,7 +9,7 @@ import json
 import uuid
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from enum import Enum
 
@@ -156,6 +156,25 @@ def run_compression_job(job_id: str, input_path: str, generate_llm_bundle: bool 
         })
 
 
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "name": "Medical CT Compression API",
+        "version": "0.1.0",
+        "description": "LLM-optimized compression for medical CT volumes",
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "upload_zip": "POST /compress/upload",
+            "upload_dicom": "POST /compress/upload-dicom",
+            "job_status": "GET /result/{job_id}",
+            "bundle": "GET /bundle/{job_id}",
+            "list_jobs": "GET /jobs"
+        }
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
@@ -251,6 +270,73 @@ async def upload_and_compress(
         
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="Invalid ZIP file")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Upload processing failed: {str(e)}")
+
+
+@app.post("/compress/upload-dicom", response_model=JobResponse)
+async def upload_dicom_files(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    generate_llm_bundle: bool = True
+):
+    """
+    Upload multiple DICOM files directly and start compression.
+    
+    Accepts one or more DICOM files (.dcm or no extension).
+    Files are saved to a temporary folder and processed as a volume.
+    """
+    # Create job
+    job_id = str(uuid.uuid4())
+    job_dir = get_job_dir(job_id)
+    job_dir.mkdir(exist_ok=True)
+    
+    # Save uploaded files
+    upload_dir = job_dir / "upload" / "dicom_files"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Save all DICOM files
+        saved_files = []
+        for file in files:
+            # Determine filename
+            filename = file.filename or "dicom_file.dcm"
+            if not filename.lower().endswith(('.dcm', '.dicom')):
+                # Some DICOM files have no extension
+                if '.' not in filename:
+                    filename += '.dcm'
+            
+            file_path = upload_dir / filename
+            with open(file_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            saved_files.append(str(file_path))
+        
+        if not saved_files:
+            raise HTTPException(status_code=400, detail="No files uploaded")
+        
+        # Initialize job status
+        save_job_status(job_id, {
+            "status": JobStatus.PENDING,
+            "created_at": datetime.now().isoformat(),
+        })
+        
+        # Queue background task - process the folder with DICOM files
+        background_tasks.add_task(
+            run_compression_job,
+            job_id,
+            str(upload_dir),
+            generate_llm_bundle
+        )
+        
+        return JobResponse(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            message=f"Uploaded {len(saved_files)} DICOM file(s), compression started"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"DICOM upload failed: {str(e)}")
 
 
 @app.get("/result/{job_id}", response_model=JobResult)
