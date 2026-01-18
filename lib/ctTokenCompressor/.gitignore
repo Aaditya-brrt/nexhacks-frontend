@@ -1,0 +1,14 @@
+TestData/
+output/
+llm-bundle/
+__pycache__/
+.venv/
+venv/
+*.dcm
+*.npz
+executables/jobs/
+*.zip
+*.png
+*.json
+!metadata.json
+!requirements.txt

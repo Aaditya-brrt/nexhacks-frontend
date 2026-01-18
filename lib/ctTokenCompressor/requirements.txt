@@ -1,0 +1,12 @@
+# Medical CT Compression Pipeline - Core Dependencies
+pydicom>=2.4.0
+numpy>=1.24.0
+scipy>=1.11.0
+scikit-image>=0.21.0
+pillow>=10.0.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+
+# Optional: JPEG2000 support (graceful fallback if unavailable)
+# imagecodecs
