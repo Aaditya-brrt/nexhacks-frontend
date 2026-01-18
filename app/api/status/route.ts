@@ -14,19 +14,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Simulate API delay
-    await new Promise((resolve) => setTimeout(resolve, 200 + Math.random() * 200));
-
-    // In a real implementation, this would query the backend job status
-    // For now, we'll use a simple time-based progression
-    // This matches the logic in lib/api.ts for consistency
-
-    // Generate mock status based on scanId and time
-    // For demo purposes, we'll use a hash of the scanId to determine start time
-    const hash = scanId.split('-').pop() || '';
-    const baseTime = parseInt(hash, 36) % 10000; // Use part of ID as seed
-    const elapsed = (Date.now() - baseTime) % 60000; // Modulo to keep it reasonable
-
+    // Immediately jump to analyzing stage - no 60-second delay
+    // The AI will stream responses immediately when analysis starts
     let stage: 'queued' | 'normalizing' | 'compressing' | 'analyzing' | 'completed' | 'error';
     let progress: number;
     let etaSeconds: number | null;
@@ -35,26 +24,11 @@ export async function GET(request: NextRequest) {
       stage = 'error';
       progress = 0.5;
       etaSeconds = null;
-    } else if (elapsed < 5000) {
-      stage = 'queued';
-      progress = 0.05;
-      etaSeconds = Math.ceil((60000 - elapsed) / 1000);
-    } else if (elapsed < 15000) {
-      stage = 'normalizing';
-      progress = 0.05 + ((elapsed - 5000) / 10000) * 0.25;
-      etaSeconds = Math.ceil((60000 - elapsed) / 1000);
-    } else if (elapsed < 35000) {
-      stage = 'compressing';
-      progress = 0.3 + ((elapsed - 15000) / 20000) * 0.3;
-      etaSeconds = Math.ceil((60000 - elapsed) / 1000);
-    } else if (elapsed < 55000) {
-      stage = 'analyzing';
-      progress = 0.6 + ((elapsed - 35000) / 20000) * 0.35;
-      etaSeconds = Math.ceil((60000 - elapsed) / 1000);
     } else {
-      stage = 'completed';
-      progress = 1.0;
-      etaSeconds = null;
+      // Immediately show as analyzing - AI will stream response
+      stage = 'analyzing';
+      progress = 0.7; // Show progress as analyzing
+      etaSeconds = null; // No ETA for streaming AI
     }
 
     return NextResponse.json({

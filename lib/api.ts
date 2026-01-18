@@ -49,30 +49,15 @@ function generateScanId(): string {
   return `scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Helper to calculate mock progress based on elapsed time
+// Helper to calculate mock progress - immediately jump to analyzing
 function calculateMockProgress(scanId: string): { stage: ProcessingStage; progress: number } {
   const state = mockScanStates.get(scanId);
   if (!state) {
     return { stage: 'queued', progress: 0 };
   }
 
-  const elapsed = (Date.now() - state.startTime) / 1000; // seconds
-  const totalDuration = 60; // 60 seconds total processing time
-
-  if (elapsed < 5) {
-    return { stage: 'queued', progress: 0.05 };
-  } else if (elapsed < 15) {
-    const progress = 0.05 + ((elapsed - 5) / 10) * 0.25;
-    return { stage: 'normalizing', progress: Math.min(progress, 0.3) };
-  } else if (elapsed < 35) {
-    const progress = 0.3 + ((elapsed - 15) / 20) * 0.3;
-    return { stage: 'compressing', progress: Math.min(progress, 0.6) };
-  } else if (elapsed < 55) {
-    const progress = 0.6 + ((elapsed - 35) / 20) * 0.35;
-    return { stage: 'analyzing', progress: Math.min(progress, 0.95) };
-  } else {
-    return { stage: 'completed', progress: 1.0 };
-  }
+  // Immediately jump to analyzing stage - AI will stream response
+  return { stage: 'analyzing', progress: 0.7 };
 }
 
 /**
@@ -81,33 +66,34 @@ function calculateMockProgress(scanId: string): { stage: ProcessingStage; progre
  * @returns Promise with scanId and message
  */
 export async function uploadScan(files: FileList | File[]): Promise<UploadResponse> {
-  // TODO: Replace with actual API call
-  // const formData = new FormData();
-  // Array.from(files).forEach((file) => {
-  //   formData.append('files', file);
-  // });
-  // const response = await fetch(`${API_BASE_URL}/api/upload`, {
-  //   method: 'POST',
-  //   body: formData,
-  // });
-  // if (!response.ok) throw new Error('Upload failed');
-  // return response.json();
-
-  // Mock implementation
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const scanId = generateScanId();
-      mockScanStates.set(scanId, {
-        startTime: Date.now(),
-        stage: 'queued',
-        progress: 0,
-      });
-      resolve({
-        scanId,
-        message: 'Upload successful. Processing started.',
-      });
-    }, 800);
+  // Call the upload API route to process files and generate pixel JSON
+  const formData = new FormData();
+  Array.from(files).forEach((file) => {
+    formData.append('files', file);
   });
+  
+  const response = await fetch('/api/upload', {
+    method: 'POST',
+    body: formData,
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || errorData.error || 'Upload failed');
+  }
+  
+  const result = await response.json();
+  
+  // Also update mock scan states for status tracking
+  if (result.scanId) {
+    mockScanStates.set(result.scanId, {
+      startTime: Date.now(),
+      stage: 'queued',
+      progress: 0,
+    });
+  }
+  
+  return result;
 }
 
 /**
@@ -143,7 +129,6 @@ export async function getStatus(scanId: string): Promise<StatusResponse> {
       }
 
       const { stage, progress } = calculateMockProgress(scanId);
-      const remaining = Math.max(0, 60 - (Date.now() - state.startTime) / 1000);
 
       // Update stored state
       state.stage = stage;
@@ -153,7 +138,7 @@ export async function getStatus(scanId: string): Promise<StatusResponse> {
         scanId,
         stage,
         progress,
-        etaSeconds: stage === 'completed' ? null : Math.ceil(remaining),
+        etaSeconds: null, // No ETA for streaming AI
         errorMessage: null,
       });
     }, 300);
@@ -231,4 +216,32 @@ export async function getResults(scanId: string): Promise<ResultsResponse> {
       });
     }, 500);
   });
+}
+
+/**
+ * Trigger AI analysis for a scan and return a stream
+ * @param scanId - The scan ID to analyze
+ * @returns Promise with ReadableStream for streaming diagnosis
+ */
+export async function analyzeScan(scanId: string): Promise<Response> {
+  // TODO: Replace with actual API call
+  // const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+  //   method: 'POST',
+  //   headers: { 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({ scanId }),
+  // });
+  // return response;
+
+  // Call the streaming API endpoint
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scanId }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`AI analysis failed: ${response.statusText}`);
+  }
+
+  return response;
 }
