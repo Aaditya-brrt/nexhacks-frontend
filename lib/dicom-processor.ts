@@ -1,20 +1,38 @@
-// DICOM to Pixel JSON Converter
-// TODO: Replace with real DICOM parser library (e.g., dicom-parser) for production
-import sharp from 'sharp';
+// DICOM Processing - Flask API Integration
+// Interfaces match Flask API response structure
 
+export interface FlaskLLMPayload {
+  prompt: string;
+  estimated_tokens: number;
+  base_image_base64: string; // Base64-encoded PNG image
+  delta_images?: Array<{
+    image_base64: string;
+    slice_index?: number;
+    description?: string;
+  }>;
+  base_image_format: string; // Usually 'png'
+}
+
+export interface FlaskMetadata {
+  num_slices: number;
+  num_deltas_included: number;
+  processed_at: string;
+}
+
+export interface FlaskAPIResponse {
+  llm_payload: FlaskLLMPayload;
+  metadata: FlaskMetadata;
+  claude_query?: any; // Optional formatted query
+  openai_query?: any; // Optional formatted query
+}
+
+// Store structure for processed scan data
 export interface PixelDataJson {
-  base64Png: string; // Base64-encoded PNG image
-  width: number;
-  height: number;
-  slices: number; // Number of slices in the scan
-  modality: 'MRI' | 'CT';
-  metadata: {
-    seriesInstanceUID?: string;
-    studyInstanceUID?: string;
-    patientId?: string;
-    studyDate?: string;
-    studyTime?: string;
-  };
+  base64Png: string; // Base64-encoded PNG image (from llm_payload.base_image_base64)
+  slices: number; // Number of slices (from metadata.num_slices)
+  modality: 'MRI' | 'CT'; // Inferred or from metadata
+  prompt?: string; // Optional prompt from Flask
+  metadata: FlaskMetadata;
 }
 
 // In-memory storage for pixel JSON data
@@ -30,6 +48,7 @@ export function getAllStoredScanIds(): string[] {
 }
 
 /**
+ * @deprecated This function is no longer used - DICOM processing is handled by Flask API
  * Convert a DICOM file to pixel JSON format
  * @param file - The DICOM file to process
  * @returns Promise with pixel JSON data

@@ -21,6 +21,7 @@ export default function ResultsPage() {
   const [diagnosisStream, setDiagnosisStream] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState(false);
   const streamStartedRef = useRef(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!scanId) {
@@ -33,16 +34,39 @@ export default function ResultsPage() {
 
     const pollStatus = async () => {
       try {
+        // Don't poll if we already have results (stream completed)
+        if (results) {
+          return;
+        }
+
         const statusData = await getStatus(scanId);
         if (!isMounted) return;
 
         setStatus(statusData);
         setError(null);
 
+        setStatus(statusData);
+        setError(null);
+
         // Trigger AI analysis when stage reaches "analyzing"
+        // IMPORTANT: Only trigger if pixel data is stored (checked in getStatus)
         if (statusData.stage === 'analyzing' && !streamStartedRef.current) {
-          streamStartedRef.current = true;
-          startAiAnalysis(scanId);
+          // Double-check pixel data exists before starting AI analysis
+          const { getPixelData } = await import('@/lib/dicom-processor');
+          const pixelData = getPixelData(scanId);
+          
+          if (pixelData) {
+            console.log('[RESULTS] Starting AI analysis - pixel data confirmed stored');
+            streamStartedRef.current = true;
+            startAiAnalysis(scanId);
+          } else {
+            console.warn('[RESULTS] Cannot start AI analysis - pixel data not stored yet for scanId:', scanId);
+            // Reset stage to compressing to retry
+            setStatus({
+              ...statusData,
+              stage: 'compressing',
+            });
+          }
         }
 
         // If completed, fetch results
@@ -85,9 +109,12 @@ export default function ResultsPage() {
     pollStatus();
 
     // Poll every 2-3 seconds while processing
-    const pollInterval = setInterval(() => {
-      if (status?.stage === 'completed' || status?.stage === 'error') {
-        clearInterval(pollInterval);
+    pollIntervalRef.current = setInterval(() => {
+      if (status?.stage === 'completed' || status?.stage === 'error' || results) {
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
         return;
       }
       pollStatus();
@@ -95,11 +122,41 @@ export default function ResultsPage() {
 
     return () => {
       isMounted = false;
-      if (pollInterval) {
-        clearInterval(pollInterval);
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
     };
   }, [scanId, results, status?.stage]);
+
+  // Helper function to clean LaTeX formatting from text
+  const cleanLatexFormatting = (text: string): string => {
+    let cleaned = text;
+    
+    // Remove LaTeX commands (e.g., \textbf{}, \textit{}, etc.)
+    cleaned = cleaned.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
+    
+    // Remove LaTeX math delimiters (e.g., $...$, $$...$$)
+    cleaned = cleaned.replace(/\$\$?([^$]*)\$\$?/g, '$1');
+    
+    // Remove LaTeX environments (e.g., \begin{...}...\end{...})
+    cleaned = cleaned.replace(/\\begin\{[^}]+\}([\s\S]*?)\\end\{[^}]+\}/g, '$1');
+    
+    // Remove LaTeX special characters
+    cleaned = cleaned.replace(/\\[{}]/g, '');
+    cleaned = cleaned.replace(/&/g, 'and');
+    cleaned = cleaned.replace(/_/g, ' ');
+    cleaned = cleaned.replace(/\^/g, '');
+    
+    // Remove multiple spaces and clean up
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+    
+    // Replace LaTeX common patterns
+    cleaned = cleaned.replace(/\\text\{([^}]*)\}/g, '$1');
+    cleaned = cleaned.replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, '($1)/($2)');
+    
+    return cleaned;
+  };
 
   // Function to start AI analysis streaming
   const startAiAnalysis = async (scanId: string) => {
@@ -149,10 +206,10 @@ export default function ResultsPage() {
               
               if (data.type === 'text-delta' && data.textDelta) {
                 accumulatedText += data.textDelta;
-                setDiagnosisStream(accumulatedText);
+                setDiagnosisStream(cleanLatexFormatting(accumulatedText));
               } else if (data.type === 'text' && data.text) {
                 accumulatedText += data.text;
-                setDiagnosisStream(accumulatedText);
+                setDiagnosisStream(cleanLatexFormatting(accumulatedText));
               }
             } catch {
               // If JSON parsing fails, skip this line
@@ -165,32 +222,35 @@ export default function ResultsPage() {
               const data = JSON.parse(jsonStr);
               if (data.textDelta || data.text) {
                 accumulatedText += data.textDelta || data.text;
-                setDiagnosisStream(accumulatedText);
+                setDiagnosisStream(cleanLatexFormatting(accumulatedText));
               }
             } catch {
               // If not JSON, treat as plain text
               const text = trimmedLine.substring(6);
               if (text) {
                 accumulatedText += text;
-                setDiagnosisStream(accumulatedText);
+                setDiagnosisStream(cleanLatexFormatting(accumulatedText));
               }
             }
           } else {
             // Plain text chunks - append directly
             accumulatedText += trimmedLine + ' ';
-            setDiagnosisStream(accumulatedText);
+            setDiagnosisStream(cleanLatexFormatting(accumulatedText));
           }
         }
       }
 
       // Store final diagnosis in results
       if (accumulatedText && !results) {
+        // Clean LaTeX formatting from the text
+        const cleanedText = cleanLatexFormatting(accumulatedText);
+        
         // Create a results object with streamed diagnosis
         const streamedResults: ResultsResponse = {
           scanId,
-          diagnosisSummary: accumulatedText,
+          diagnosisSummary: cleanedText,
           confidence: 0.85, // Default confidence for AI-generated
-          keyFindings: extractKeyFindings(accumulatedText),
+          keyFindings: extractKeyFindings(cleanedText),
           compressedPreviewUrl: '/mock/compressed-image.png',
           metadata: {
             modality: 'MRI', // Would come from actual scan data
@@ -199,6 +259,22 @@ export default function ResultsPage() {
           },
         };
         setResults(streamedResults);
+        
+        // Update status to completed
+        setStatus({
+          scanId,
+          stage: 'completed',
+          progress: 1.0,
+          etaSeconds: null,
+          errorMessage: null,
+        });
+        setIsLoading(false);
+        
+        // Stop polling once we have results
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
       }
 
       setIsStreaming(false);
@@ -286,7 +362,7 @@ export default function ResultsPage() {
           </div>
         )}
 
-        {status && status.stage !== 'completed' && status.stage !== 'error' && (
+        {status && status.stage !== 'completed' && status.stage !== 'error' && !results && (
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8">
             <div className="flex flex-col items-center gap-6">
               <LoadingSpinner size="lg" />

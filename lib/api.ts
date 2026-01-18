@@ -1,6 +1,6 @@
 // API Client for MRI/CT Scan Dashboard
-// TODO: Replace with actual backend URL when backend is implemented
-// const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+import { getJobResult, getBundleMetadata, getBundleFileAsBase64 } from '@/lib/fastapi-client';
+import { storePixelData } from '@/lib/dicom-processor';
 
 // Type definitions for API responses
 export interface UploadResponse {
@@ -44,21 +44,20 @@ const mockScanStates: Map<string, {
   progress: number;
 }> = new Map();
 
-// Helper to generate random UUID
-function generateScanId(): string {
-  return `scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
+// These are kept for backward compatibility but not used with FastAPI
+// Helper to generate random UUID (deprecated - FastAPI generates job_id)
+// function generateScanId(): string {
+//   return `scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+// }
 
-// Helper to calculate mock progress - immediately jump to analyzing
-function calculateMockProgress(scanId: string): { stage: ProcessingStage; progress: number } {
-  const state = mockScanStates.get(scanId);
-  if (!state) {
-    return { stage: 'queued', progress: 0 };
-  }
-
-  // Immediately jump to analyzing stage - AI will stream response
-  return { stage: 'analyzing', progress: 0.7 };
-}
+// Helper to calculate mock progress (deprecated - FastAPI handles status)
+// function calculateMockProgress(scanId: string): { stage: ProcessingStage; progress: number } {
+//   const state = mockScanStates.get(scanId);
+//   if (!state) {
+//     return { stage: 'queued', progress: 0 };
+//   }
+//   return { stage: 'analyzing', progress: 0.7 };
+// }
 
 /**
  * Upload scan files to the backend
@@ -97,52 +96,126 @@ export async function uploadScan(files: FileList | File[]): Promise<UploadRespon
 }
 
 /**
- * Get the current processing status for a scan
- * @param scanId - The scan ID to check status for
+ * Get the current processing status for a scan (job_id from FastAPI)
+ * @param scanId - The job ID (used as scanId for compatibility)
  * @returns Promise with current status
  */
 export async function getStatus(scanId: string): Promise<StatusResponse> {
-  // TODO: Replace with actual API call
-  // const response = await fetch(`${API_BASE_URL}/api/status?scanId=${scanId}`);
-  // if (!response.ok) throw new Error('Failed to fetch status');
-  // return response.json();
-
-  // Mock implementation
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const state = mockScanStates.get(scanId);
-      if (!state) {
-        reject(new Error('Scan not found'));
-        return;
-      }
-
-      // Simulate error for specific scan IDs (for testing)
-      if (scanId.includes('error')) {
-        resolve({
-          scanId,
-          stage: 'error',
-          progress: 0.5,
-          etaSeconds: null,
-          errorMessage: 'Processing failed: Unable to analyze scan data.',
-        });
-        return;
-      }
-
-      const { stage, progress } = calculateMockProgress(scanId);
-
-      // Update stored state
-      state.stage = stage;
-      state.progress = progress;
-
-      resolve({
+  try {
+    // Call FastAPI /result/{job_id} endpoint
+    const jobResult = await getJobResult(scanId);
+    
+    console.log('[API] getStatus - Job result:', {
+      scanId,
+      status: jobResult.status,
+      error: jobResult.error,
+    });
+    
+    // Map FastAPI status to our ProcessingStage
+    let stage: ProcessingStage;
+    let progress = 0.5;
+    
+    switch (jobResult.status) {
+      case 'pending':
+        stage = 'queued';
+        progress = 0.1;
+        break;
+      case 'processing':
+        stage = 'compressing'; // FastAPI compresses in processing stage
+        progress = 0.5;
+        break;
+      case 'complete':
+        // When complete, we need to fetch bundle and store it BEFORE setting to analyzing
+        // Check if pixel data is already stored
+        const { getPixelData } = await import('@/lib/dicom-processor');
+        const existingData = getPixelData(scanId);
+        
+        if (existingData) {
+          // Already stored - ready for AI analysis
+          stage = 'analyzing';
+          progress = 0.8;
+        } else {
+          // Try to fetch bundle and store it
+          try {
+            const bundleMeta = await getBundleMetadata(scanId);
+            // FastAPI backend creates montage_overview.png as the main representative image
+            // The metadata.bundle.montage_file contains "montage_overview.png"
+            // Fallback to first PNG file if montage doesn't exist
+            let baseImageFile = 'montage_overview.png'; // Default
+            
+            // Try to get from metadata.bundle.montage_file
+            if (bundleMeta.metadata?.bundle && typeof bundleMeta.metadata.bundle === 'object') {
+              const bundle = bundleMeta.metadata.bundle as { montage_file?: string };
+              if (bundle.montage_file) {
+                baseImageFile = bundle.montage_file;
+              }
+            }
+            
+            // Verify file exists in bundle, otherwise find any PNG
+            if (!bundleMeta.files.includes(baseImageFile)) {
+              baseImageFile = bundleMeta.files.find(f => f.endsWith('.png')) || 'montage_overview.png';
+            }
+            
+            // Fetch base image and store it for AI analysis
+            const base64Png = await getBundleFileAsBase64(scanId, baseImageFile);
+            const numSlices = typeof jobResult.metrics?.num_slices === 'number' 
+              ? jobResult.metrics.num_slices 
+              : 0;
+            const pixelData = {
+              base64Png,
+              slices: numSlices,
+              modality: 'CT' as const,
+              prompt: (typeof bundleMeta.metadata.prompt === 'string' ? bundleMeta.metadata.prompt : null) || 'Please analyze this CT scan series.',
+              metadata: {
+                num_slices: numSlices,
+                num_deltas_included: 0,
+                processed_at: jobResult.completed_at || new Date().toISOString(),
+              },
+            };
+            storePixelData(scanId, pixelData);
+            console.log('[API] Bundle data stored for AI analysis:', scanId);
+            // Now ready for AI analysis
+            stage = 'analyzing';
+            progress = 0.8;
+          } catch (bundleError) {
+            console.warn('[API] Bundle not ready yet, keeping as compressing:', bundleError);
+            // Keep as compressing until bundle is ready
+            stage = 'compressing';
+            progress = 0.7;
+          }
+        }
+        break;
+      case 'failed':
+        stage = 'error';
+        progress = 0;
+        break;
+      default:
+        stage = 'queued';
+        progress = 0;
+    }
+    
+    return {
+      scanId,
+      stage,
+      progress,
+      etaSeconds: null,
+      errorMessage: jobResult.error || null,
+    };
+  } catch (error) {
+    // If job not found, treat as error
+    if (error instanceof Error && error.message.includes('404')) {
+      return {
         scanId,
-        stage,
-        progress,
-        etaSeconds: null, // No ETA for streaming AI
-        errorMessage: null,
-      });
-    }, 300);
-  });
+        stage: 'error',
+        progress: 0,
+        etaSeconds: null,
+        errorMessage: 'Job not found',
+      };
+    }
+    
+    // Re-throw other errors
+    throw error;
+  }
 }
 
 /**

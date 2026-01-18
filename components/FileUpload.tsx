@@ -103,7 +103,7 @@ export default function FileUpload({
           multiple
           onChange={handleFileInput}
           className="hidden"
-          accept=".dcm,.dicom,.nii,.nii.gz,.mhd,.raw,.img"
+          accept=".dcm,.dicom,.nii,.nii.gz,.mhd,.raw,.img,.zip"
         />
         <div className="flex flex-col items-center gap-2">
           <div className="text-4xl mb-2">📁</div>
@@ -114,7 +114,7 @@ export default function FileUpload({
             or click to browse
           </p>
           <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-            Supports: DICOM (.dcm, .dicom), NIfTI (.nii, .nii.gz), MHD (.mhd)
+            Supports: DICOM files (.dcm, .dicom), ZIP folders, NIfTI (.nii, .nii.gz), MHD (.mhd)
           </p>
           <p className="text-xs text-gray-400 dark:text-gray-500">
             Max {maxFiles} files, {maxSizeMB}MB per file

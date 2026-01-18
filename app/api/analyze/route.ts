@@ -45,27 +45,38 @@ export async function POST(request: NextRequest) {
 
     // Prepare prompt and image for AI analysis
     // Use base64 PNG string directly (AI SDK expects base64 string)
-    const prompt = `You are a medical imaging AI assistant. Analyze the provided medical scan image and provide a diagnostic summary.
+    // Use Flask-provided prompt if available, otherwise use default
+    const defaultPrompt = `Analyze this ${pixelData.modality} scan image and provide ONLY a brief diagnosis (2-3 sentences) and 3-5 key bullet points.
 
-Scan Details:
-- Modality: ${pixelData.modality}
-- Dimensions: ${pixelData.width}x${pixelData.height} pixels
-- Number of slices: ${pixelData.slices}
+Requirements:
+- Keep response under 200 words total
+- Use plain text only (no LaTeX, markdown formatting, or special characters)
+- Brief diagnosis in first 2-3 sentences
+- Follow with 3-5 key findings as simple bullet points (use "•" or "-" prefix)
+- No tables, equations, or complex formatting
 
-Please analyze the medical scan image and provide:
-1. A comprehensive diagnostic summary describing any abnormalities, normal findings, or notable features
-2. A confidence assessment of the analysis
-3. Key findings as bullet points
-4. Any recommendations for further clinical correlation if needed
-
-Format your response as a medical diagnostic report. Be professional and precise. Remember this is for research and demonstration purposes only.`;
+Format:
+Brief Diagnosis: [2-3 sentence summary]
+Key Findings:
+• [First finding]
+• [Second finding]
+• [etc.]`;
+    
+    const prompt = pixelData.prompt || defaultPrompt;
 
     // Use Vercel AI SDK with Google Generative AI (Gemini)
-    // Gemini supports images in the message content as base64 strings
+    // Gemini supports images in the message content as base64 strings (raw base64, no data URL prefix)
+    // The pixelData.base64Png is already a raw base64 string from getBundleFileAsBase64
     // TODO: Configure API key via environment variable
     // GOOGLE_GENERATIVE_AI_API_KEY should be set in .env.local
     console.log('[ANALYZE] Starting AI stream with Google Gemini');
     console.log('[ANALYZE] Base64 PNG length:', pixelData.base64Png.length, 'characters');
+    console.log('[ANALYZE] Base64 PNG preview (first 50 chars):', pixelData.base64Png.substring(0, 50));
+    
+    // Validate base64 format (optional check)
+    if (!pixelData.base64Png || pixelData.base64Png.length === 0) {
+      throw new Error('Invalid base64 PNG data: empty or missing');
+    }
     
     const result = streamText({
       model: google('gemini-2.5-flash'), 
@@ -79,7 +90,9 @@ Format your response as a medical diagnostic report. Be professional and precise
             },
             {
               type: 'image',
-              image: pixelData.base64Png, // Base64 string directly
+              // Vercel AI SDK expects raw base64 string (no data:image/png;base64, prefix)
+              // getBundleFileAsBase64 already returns raw base64 from the PNG file
+              image: pixelData.base64Png,
             },
           ],
         },
